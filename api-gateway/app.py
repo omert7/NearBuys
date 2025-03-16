@@ -2,7 +2,7 @@ import os
 import json
 import requests
 import logging
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, redirect
 from flask_cors import CORS
 from dotenv import load_dotenv
 import jwt
@@ -23,30 +23,38 @@ CORS(app)  # Enable CORS for all routes
 
 # Service registry - in production, you might use a service discovery tool like Consul
 SERVICE_REGISTRY = {
-    # Example services for NeighborBuy
-    'products': os.getenv('PRODUCTS_SERVICE_URL', 'http://localhost:5002'),
-    'users': os.getenv('USERS_SERVICE_URL', 'http://localhost:5003'),
-    'sellers': os.getenv('SELLERS_SERVICE_URL', 'http://localhost:5004')
+    # Use correct Docker service names (not localhost)
+    'product-service': 'http://product-service:5004',
+    'user-service': 'http://user-service:5003',
+    'seller-service': 'http://seller-service:5005'
 }
 
 # Secret key for JWT validation
-JWT_SECRET = os.getenv('JWT_SECRET', 'your-secret-key')
+JWT_SECRET = os.getenv('JWT_SECRET_KEY', 'your-secret-key')
 
 # Routes that don't require authentication
 PUBLIC_ROUTES = [
-    '/auth/login',
-    '/auth/register',
-    '/products/browse',
-    '/products/search',
-    '/users/login',
-    '/users/register',
-    '/sellers/search',
-    '/users/oauth/login',
-    '/users/oauth/callback',
-    '/users/reactivate',
-    '/sellers/health',
-    '/users/health',  # Add this line to make the health endpoint public
-    '/health'
+    # Health endpoints
+    '/health',
+    '/product-service/health',
+    '/user-service/health',
+    '/seller-service/health',
+    
+    # Authentication endpoints
+    '/user-service/api/users/register',
+    '/user-service/api/users/login',
+    '/user-service/oauth/login/google',
+    '/user-service/oauth/login/facebook',
+    '/user-service/oauth/callback/google',
+    '/user-service/oauth/callback/facebook',
+    
+    # Public product endpoints
+    '/product-service/categories',
+    '/product-service/products',
+    '/product-service/api/products',
+    
+    # Public seller endpoints
+    '/seller-service/sellers'
 ]
 
 # Authentication decorator
@@ -111,6 +119,7 @@ def health_check():
     services_status = {}
     for service_name, service_url in SERVICE_REGISTRY.items():
         try:
+            logger.info(f"Checking health of {service_name} at {service_url}")
             response = requests.get(f"{service_url}/health", timeout=2)
             services_status[service_name] = "UP" if response.status_code == 200 else "DOWN"
         except requests.RequestException:
@@ -122,12 +131,24 @@ def health_check():
         "services": services_status
     }), 200 if all_healthy else 207
 
+# OAuth redirect handler
+@app.route('/oauth/login/<provider>', methods=['GET'])
+def oauth_login(provider):
+    """Redirect to user-service OAuth login"""
+    return redirect(f"{SERVICE_REGISTRY['user-service']}/oauth/login/{provider}")
+
+@app.route('/oauth/callback/<provider>', methods=['GET'])
+def oauth_callback(provider):
+    """Handle OAuth callback by forwarding to user-service"""
+    return redirect(f"{SERVICE_REGISTRY['user-service']}/oauth/callback/{provider}")
+
 # Main gateway logic - forwarding requests to appropriate services
 @app.route('/<service>/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 @app.route('/<service>/', methods=['GET', 'POST', 'PUT', 'DELETE'], defaults={'path': ''})
 def gateway(service, path):
     full_path = f"/{service}/{path}" if path else f"/{service}/"
-    
+    logger.info(f"full_path: {full_path}")
+            
     # Check if request is to a known service
     if service not in SERVICE_REGISTRY:
         return jsonify({"error": "Service not found"}), 404
@@ -135,7 +156,7 @@ def gateway(service, path):
     # Apply rate limiting based on IP address (or user ID if authenticated)
     client_id = request.headers.get('X-Forwarded-For', request.remote_addr)
     if hasattr(request, 'user'):
-        client_id = request.user.get('user_id', client_id)
+        client_id = request.user.get('sub', client_id)
     
     if not rate_limiter.is_allowed(client_id):
         return jsonify({"error": "Rate limit exceeded"}), 429
@@ -172,12 +193,12 @@ def gateway(service, path):
         
         # Add user info to request if authenticated
         if hasattr(request, 'user'):
-            headers['X-User-ID'] = str(request.user.get('user_id'))
+            headers['X-User-ID'] = str(request.user.get('sub'))
             headers['X-User-Role'] = request.user.get('role', 'user')
         
         # Get request data
         data = request.get_data()
-        
+        logger.info(f"iv'e reached here")
         # Forward the request
         service_response = requests.request(
             method=request.method,
@@ -248,5 +269,4 @@ if __name__ == '__main__':
     
     logger.info(f"Starting API Gateway on port {port}")
     logger.info(f"Registered services: {json.dumps(SERVICE_REGISTRY, indent=2)}")
-    
     app.run(host='0.0.0.0', port=port, debug=debug_mode)

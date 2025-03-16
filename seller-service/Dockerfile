@@ -1,13 +1,22 @@
-FROM python:3.11-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
-# Copy shared utilities first
-# COPY ./shared /app/shared
+# Copy shared requirements
+COPY shared/requirements.txt .
 
-COPY requirements.txt .
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy application code
+COPY seller-service/ .
+COPY shared /app/shared
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5004", "app:app"]
+# Add shared to PYTHONPATH
+ENV PYTHONPATH=/app
+
+# Expose port
+EXPOSE 5005
+
+# Run the application
+CMD ["python", "app.py"]
