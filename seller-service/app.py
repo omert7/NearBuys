@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from dotenv import load_dotenv
 from shared.utils.message_queue import MessageQueue
+from shared.utils.prometheus_metrics import init_metrics, track_requests, track_user_activity
 
 # Initialize message queue
 message_queue = MessageQueue()
@@ -26,6 +27,11 @@ logger = logging.getLogger('seller_service')
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize Prometheus metrics
+metrics_port = int(os.getenv('METRICS_PORT', 8003))
+init_metrics('seller-service', '1.0.0', metrics_port)
+track_requests(app)
 
 # JWT configuration
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
@@ -133,6 +139,9 @@ def create_seller():
             
         # Generate seller ID
         seller_id = str(uuid.uuid4())
+        
+        # Track seller creation
+        track_user_activity('seller_created', request.user_role)
         
         # Send message to message processor
         response = message_queue.publish_and_wait('seller.created', {

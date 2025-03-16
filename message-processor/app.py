@@ -3,7 +3,13 @@ Main application file for the message processor.
 """
 import json
 import logging
+import os
 from typing import Dict, Any, Callable
+from dotenv import load_dotenv
+from shared.utils.prometheus_metrics import init_metrics, MESSAGE_PROCESSING_TIME
+
+# Load environment variables
+load_dotenv()
 
 # Import configuration
 from config.settings import logger
@@ -37,6 +43,10 @@ from handlers.bid_handlers import (
     handle_bid_created, handle_bid_updated, handle_bid_deleted,
     handle_bid_accepted, handle_bid_rejected
 )
+
+# Initialize Prometheus metrics
+metrics_port = int(os.getenv('METRICS_PORT', 8004))
+init_metrics('message-processor', '1.0.0', metrics_port)
 
 class MessageProcessor:
     def __init__(self):
@@ -97,7 +107,12 @@ class MessageProcessor:
     def process_message(self, ch, method, properties, body):
         """Process incoming messages"""
         event_type = None
+        start_time = None
         try:
+            # Start timing the message processing
+            import time
+            start_time = time.time()
+            
             # Convert bytes to string then parse JSON
             message_str = body.decode('utf-8')
             message = json.loads(message_str)
@@ -125,6 +140,11 @@ class MessageProcessor:
                 # Acknowledge the message
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 logger.info(f"Message acknowledged for event: {event_type}")
+                
+                # Record message processing time
+                if start_time and event_type:
+                    processing_time = time.time() - start_time
+                    MESSAGE_PROCESSING_TIME.labels(event_type=event_type).observe(processing_time)
             else:
                 logger.warning(f"Unknown event type: {event_type}")
                 # Reject the message without requeuing since we don't know how to handle it
@@ -150,6 +170,11 @@ class MessageProcessor:
             
             # Requeue the message for later processing
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            
+            # Record processing time for failed messages
+            if start_time and event_type:
+                processing_time = time.time() - start_time
+                MESSAGE_PROCESSING_TIME.labels(event_type=f"{event_type}_failed").observe(processing_time)
 
     def run(self):
         """Start consuming messages"""

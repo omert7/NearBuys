@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from dotenv import load_dotenv
 from shared.utils.message_queue import MessageQueue
+from shared.utils.prometheus_metrics import init_metrics, track_requests, track_user_activity
 
 # Initialize message queue
 message_queue = MessageQueue()
@@ -26,6 +27,11 @@ logger = logging.getLogger('product_service')
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize Prometheus metrics
+metrics_port = int(os.getenv('METRICS_PORT', 8002))
+init_metrics('product-service', '1.0.0', metrics_port)
+track_requests(app)
 
 # JWT configuration
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
@@ -86,6 +92,9 @@ def health_check():
 @app.route('/categories', methods=['GET'])
 def get_categories():
     """Get all categories"""
+    # Track categories view
+    track_user_activity('categories_view', getattr(request, 'user_role', 'anonymous'))
+    
     # Send message to RabbitMQ
     message_queue.publish('product.get_categories', {})
     
@@ -208,6 +217,9 @@ def create_product():
         # Generate product ID
         product_id = str(uuid.uuid4())
         
+        # Track product creation
+        track_user_activity('product_created', request.user_role)
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('product.created', {
             'id': product_id,
@@ -226,6 +238,9 @@ def create_product():
 @app.route('/api/products/<product_id>', methods=['GET'])
 def get_product(product_id):
     try:
+        # Track product view
+        track_user_activity('product_view', getattr(request, 'user_role', 'anonymous'))
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('product.get', {
             'product_id': product_id
@@ -247,6 +262,9 @@ def update_product(product_id):
     try:
         data = request.get_json()
         
+        # Track product update
+        track_user_activity('product_updated', request.user_role)
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('product.updated', {
             'id': product_id,
@@ -267,6 +285,9 @@ def update_product(product_id):
 @admin_required
 def delete_product(product_id):
     try:
+        # Track product deletion
+        track_user_activity('product_deleted', request.user_role)
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('product.deleted', {
             'product_id': product_id
@@ -389,6 +410,9 @@ def get_group_buy_participants(group_buy_id):
 @token_required
 def join_group_buy(group_buy_id):
     try:
+        # Track group buy join
+        track_user_activity('group_buy_joined', request.user_role)
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('group_buy.joined', {
             'group_buy_id': group_buy_id,
@@ -408,6 +432,9 @@ def join_group_buy(group_buy_id):
 @token_required
 def leave_group_buy(group_buy_id):
     try:
+        # Track group buy leave
+        track_user_activity('group_buy_left', request.user_role)
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('group_buy.left', {
             'group_buy_id': group_buy_id,

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from authlib.integrations.flask_client import OAuth
 import re
 from shared.utils.message_queue import MessageQueue
+from shared.utils.prometheus_metrics import init_metrics, track_requests, track_user_activity
 import atexit
 
 # Load environment variables
@@ -25,6 +26,11 @@ logger = logging.getLogger('user_service')
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize Prometheus metrics
+metrics_port = int(os.getenv('METRICS_PORT', 8001))
+init_metrics('user-service', '1.0.0', metrics_port)
+track_requests(app)
 
 # Initialize message queue with retries
 message_queue = None
@@ -212,6 +218,9 @@ def register():
         if not message_queue or not message_queue.connection or message_queue.connection.is_closed:
             init_message_queue()
 
+        # Track user registration
+        track_user_activity('registration', 'new_user')
+
         # Send message to message processor
         response = message_queue.publish_and_wait('user.created', {
             'username': data['username'],
@@ -240,6 +249,9 @@ def login():
         # Ensure message queue is connected
         if not message_queue or not message_queue.connection or message_queue.connection.is_closed:
             init_message_queue()
+        
+        # Track login attempt
+        track_user_activity('login_attempt', 'user')
             
         # Send message to message processor
         response = message_queue.publish_and_wait('user.login', {
@@ -249,6 +261,10 @@ def login():
         
         if not response:
             return jsonify({'error': 'Invalid credentials'}), 401
+        
+        # Track successful login
+        if response.get('status') == 'success':
+            track_user_activity('login_success', response.get('role', 'user'))
             
         return jsonify(response), 200
         
@@ -308,6 +324,9 @@ def oauth_callback(provider):
 @token_required
 def get_user(user_id):
     try:
+        # Track user profile view
+        track_user_activity('profile_view', request.user_role)
+        
         # Send message to message processor
         response = message_queue.publish_and_wait('user.get_profile', {
             'user_id': user_id
@@ -331,6 +350,9 @@ def update_user(user_id):
         # Validate user can only update their own profile
         if request.user_id != user_id:
             return jsonify({'error': 'Unauthorized'}), 403
+        
+        # Track profile update
+        track_user_activity('profile_update', request.user_role)
             
         # Send message to message processor
         response = message_queue.publish_and_wait('user.updated', {
@@ -360,6 +382,9 @@ def change_password(user_id):
         # Validate required fields
         if not all(field in data for field in ['current_password', 'new_password']):
             return jsonify({'error': 'Missing required fields'}), 400
+        
+        # Track password change
+        track_user_activity('password_change', request.user_role)
             
         # Send message to message processor
         response = message_queue.publish_and_wait('user.password_change', {
@@ -389,6 +414,9 @@ def add_address(user_id):
             
         # Generate address ID
         address_id = str(uuid.uuid4())
+        
+        # Track address addition
+        track_user_activity('address_added', request.user_role)
         
         # Send message to message processor
         response = message_queue.publish_and_wait('user.address_added', {

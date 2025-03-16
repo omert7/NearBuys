@@ -9,6 +9,7 @@ import threading
 from typing import Dict, Any, Optional
 from pika.exceptions import AMQPConnectionError, AMQPChannelError, ConnectionClosedByBroker, StreamLostError
 from pika.adapters.blocking_connection import BlockingChannel
+from shared.utils.prometheus_metrics import track_message_queue_operation, MESSAGE_QUEUE_OPERATIONS
 
 load_dotenv()
 
@@ -56,6 +57,7 @@ class MessageQueue:
             # Sleep for heartbeat interval
             time.sleep(self.heartbeat_interval)
         
+    @track_message_queue_operation('connection', 'connect')
     def _connect(self):
         """Establish connection to RabbitMQ with retries"""
         with self.connection_lock:
@@ -129,6 +131,7 @@ class MessageQueue:
                     logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {self.retry_delay} seconds...")
                     time.sleep(self.retry_delay)
 
+    @track_message_queue_operation('connection', 'ensure_connection')
     def _ensure_connection(self):
         """Ensure connection is alive, reconnect if needed"""
         with self.connection_lock:
@@ -144,6 +147,7 @@ class MessageQueue:
                 logger.error(f"Error ensuring connection: {str(e)}")
                 self._connect()
             
+    @track_message_queue_operation('channel', 'setup')
     def _setup_channel(self):
         """Setup channel with required exchanges and queues"""
         with self.connection_lock:
@@ -197,6 +201,7 @@ class MessageQueue:
                 logger.error(f"Error setting up channel: {str(e)}")
                 raise
             
+    @track_message_queue_operation('response', 'handle')
     def _handle_response(self, ch, method, properties, body):
         """Handle response messages"""
         try:
@@ -222,6 +227,7 @@ class MessageQueue:
             # Still acknowledge to avoid stuck messages
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
+    @track_message_queue_operation('error', 'handle')
     def _handle_error(self, ch, method, properties, body):
         """Handle error messages"""
         try:
@@ -247,6 +253,7 @@ class MessageQueue:
             # Still acknowledge to avoid stuck messages
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
+    @track_message_queue_operation('message', 'publish_and_wait')
     def publish_and_wait(self, event_type: str, data: Dict[str, Any], timeout: int = 30) -> Optional[Dict[str, Any]]:
         """
         Publish a message and wait for response
@@ -288,6 +295,13 @@ class MessageQueue:
                         reply_to=self.response_queue  # Add reply_to for direct routing
                     )
                 )
+            
+            # Track in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='publish', 
+                status='success', 
+                queue=event_type
+            ).inc()
             
             logger.info(f"Message published to {event_type}, waiting for response on {self.response_queue}")
             
@@ -337,6 +351,13 @@ class MessageQueue:
             # If we get here, we timed out waiting for a response
             logger.warning(f"Timeout waiting for response to {event_type}")
             
+            # Track timeout in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='response_timeout', 
+                status='error', 
+                queue=event_type
+            ).inc()
+            
             # Last attempt - try specific direct gets
             logger.info(f"Doing a final direct get attempt for {correlation_id}")
             try:
@@ -358,9 +379,18 @@ class MessageQueue:
             
         except Exception as e:
             logger.error(f"Error in publish_and_wait: {str(e)}")
+            
+            # Track error in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='publish_error', 
+                status='error', 
+                queue=event_type
+            ).inc()
+            
             self._ensure_connection()
             raise
 
+    @track_message_queue_operation('message', 'publish')
     def publish(self, event_type: str, data: Dict[str, Any]):
         """Publish a message without waiting for response"""
         self._ensure_connection()
@@ -381,8 +411,23 @@ class MessageQueue:
                         content_type='application/json'
                     )
                 )
+                
+            # Track in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='publish', 
+                status='success', 
+                queue=event_type
+            ).inc()
         except Exception as e:
             logger.error(f"Error publishing message: {str(e)}")
+            
+            # Track error in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='publish_error', 
+                status='error', 
+                queue=event_type
+            ).inc()
+            
             self._ensure_connection()
             raise
 
@@ -403,3 +448,40 @@ class MessageQueue:
             logger.info("Successfully closed RabbitMQ connection")
         except Exception as e:
             logger.error(f"Error closing connection: {str(e)}")
+            
+    def send_response(self, routing_key, response, correlation_id):
+        """Send a response message to the specified routing key"""
+        self._ensure_connection()
+        
+        try:
+            with self.connection_lock:
+                self.channel.basic_publish(
+                    exchange='neighborbuy',
+                    routing_key=routing_key,
+                    body=json.dumps(response),
+                    properties=pika.BasicProperties(
+                        correlation_id=correlation_id,
+                        delivery_mode=2,  # make message persistent
+                        content_type='application/json'
+                    )
+                )
+                
+            # Track in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='response_sent', 
+                status='success', 
+                queue=routing_key
+            ).inc()
+            
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            
+            # Track error in Prometheus
+            MESSAGE_QUEUE_OPERATIONS.labels(
+                operation='response_error', 
+                status='error', 
+                queue=routing_key
+            ).inc()
+            
+            self._ensure_connection()
+            raise

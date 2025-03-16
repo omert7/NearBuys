@@ -1,0 +1,38 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "user-service"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["user-service:8001"]
+
+  - job_name: "product-service"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["product-service:8002"]
+
+  - job_name: "seller-service"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["seller-service:8003"]
+
+  - job_name: "message-processor"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["message-processor:8004"] 

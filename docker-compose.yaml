@@ -31,6 +31,43 @@ services:
     networks:
       - nearbuys-network
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - nearbuys-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - nearbuys-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
   api-gateway:
     build:
       context: .
@@ -44,6 +81,7 @@ services:
       - RATE_LIMIT=100
       - RATE_WINDOW=60
       - LOG_LEVEL=INFO
+      - METRICS_PORT=8000
     depends_on:
       - user-service
       - product-service
@@ -58,11 +96,14 @@ services:
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
       - DATABASE_URL=postgresql://nearbuys:nearbuys@postgres:5432/nearbuys
+      - METRICS_PORT=8004
     depends_on:
       rabbitmq:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    ports:
+      - "8004:8004"
     networks:
       - nearbuys-network
 
@@ -72,10 +113,12 @@ services:
       dockerfile: user-service/Dockerfile
     ports:
       - "5003:5003"
+      - "8001:8001"
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
       - DATABASE_URL=postgresql://nearbuys:nearbuys@postgres:5432/nearbuys
       - JWT_SECRET_KEY=your-super-secret-key-replace-in-production
+      - METRICS_PORT=8001
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -90,10 +133,12 @@ services:
       dockerfile: product-service/Dockerfile
     ports:
       - "5004:5004"
+      - "8002:8002"
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
       - DATABASE_URL=postgresql://nearbuys:nearbuys@postgres:5432/nearbuys
       - JWT_SECRET_KEY=your-super-secret-key-replace-in-production
+      - METRICS_PORT=8002
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -108,10 +153,12 @@ services:
       dockerfile: seller-service/Dockerfile
     ports:
       - "5005:5005"
+      - "8003:8003"
     environment:
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
       - DATABASE_URL=postgresql://nearbuys:nearbuys@postgres:5432/nearbuys
       - JWT_SECRET_KEY=your-super-secret-key-replace-in-production
+      - METRICS_PORT=8003
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -125,4 +172,6 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data: 
+  postgres_data:
+  prometheus_data:
+  grafana_data: 
